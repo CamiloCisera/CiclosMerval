@@ -1,0 +1,102 @@
+import pandas as pd
+import datetime as dt
+import yfinance as yf
+import numpy as np
+
+import matplotlib.pyplot as plt
+plt.style.use('seaborn-white')
+plt.rcParams['font.size'] = 10
+plt.rcParams['figure.figsize'] = [12,6]
+plt.rcParams["font.weight"] = "bold"
+plt.rcParams["axes.labelweight"] = "bold"
+plt.rcParams["font.size"] = 15
+
+#==============================================================================
+#                     AJUSTE POR INFLACION
+#   Cambiar la direccion de los pd.read a donde guarden los archivos
+#==============================================================================
+
+merv = pd.read_excel("/Users/ciser/Desktop/Camilo/Exportados desde Python/merval_actualizado.xlsx",
+                     index_col=0)
+merv = merv.drop(["Merval", "contado con liqui"], axis=1)
+
+#https://fred.stlouisfed.org/series/FPCPITOTLZGUSA
+infla_indx = pd.read_csv("/Users/ciser/Downloads/FPCPITOTLZGUSA.csv")
+infla_indx["DATE"] = pd.to_datetime(infla_indx["DATE"])
+infla_indx.set_index("DATE", inplace=True)
+
+inflation =  infla_indx[infla_indx.index>="1996-01-01"].div(100)[::-1]
+inflation.columns = ["annual"]
+inflation["acum"] = inflation["annual"].add(1).cumprod()-1
+inflation = inflation.drop(["annual"], axis=1)
+
+merv_adj = pd.merge(left=merv, right=inflation, how="outer",
+                    left_on=merv.index, right_on="DATE")
+
+merv_adj = merv_adj.sort_values("DATE").set_index("DATE")
+merv_adj["acum"].loc["2020-01-02"] = 0
+merv_adj["acum"].fillna(method="ffill", inplace=True)
+
+merv_adj2 = (merv_adj["Merval_dlr"]*(1+merv_adj["acum"])).to_frame().dropna()
+merv_adj2.columns = ["merv_inflation_adj"]
+
+#Primer grafico (ajustado por inflacion)
+plt.title("Merval en U$S ajustados por inflacion", fontsize=20)
+plt.plot(merv_adj2["merv_inflation_adj"], c="darkgreen", lw=1)
+plt.ylabel("U$S", c="black", fontsize=15)
+plt.xlabel("Fecha", c="black", fontsize=15)
+plt.axhline(merv_adj2["merv_inflation_adj"].mean(), c="r", ls="dashdot",
+            label="Promedio", lw=1.2)
+plt.axhline(merv_adj2["merv_inflation_adj"].loc["2008-01-05":].min(),
+            ls="dashed", lw=0.9, label="Minimo reciente")
+plt.legend()
+plt.grid(True)
+plt.show()
+
+# Perdida desde minimo reciente hasta minimos de 2002 ajustados por inflacion
+(merv_adj2["merv_inflation_adj"].min()/merv_adj2["merv_inflation_adj"].loc["2008-01-05":].min())-1
+
+#==============================================================================
+#                     CICLOS
+#==============================================================================
+maxs, idx_max = [], []
+mins, idx_min = [], []
+
+merv["max_500"] = merv["Merval_dlr"].rolling(500, min_periods=1).max().shift(-250)
+merv["min_500"] = merv["Merval_dlr"].rolling(500, min_periods=1).min().shift(-250)
+merv["min_500"].fillna(method="ffill",inplace=True)
+
+for i in range(len(merv)):
+    if merv["Merval_dlr"][i] == merv["max_500"][i]:
+        maxs.append(merv["Merval_dlr"][i])
+        idx_max.append(merv.index[i])
+    elif merv["Merval_dlr"][i] == merv["min_500"][i]:
+        mins.append(merv["Merval_dlr"][i])
+        idx_min.append(merv.index[i])
+
+# Segundo grafico, en usd nominales con mins y maxs
+plt.title("Merval en U$S nominales - maximos y minimos", fontsize=20)
+plt.plot(merv["Merval_dlr"], lw=1.2, c="k")
+plt.scatter(idx_max,maxs, c="g", s=150, alpha=0.9, label="Maximos")
+plt.scatter(idx_min[1:],mins[1:], c="r", s=150, alpha=0.7, label="Minimos")
+plt.ylabel("U$S", c="black", fontsize=15)
+plt.xlabel("Fecha", c="black", fontsize=15)
+plt.legend()
+plt.show()
+
+#Variaciones entre mins y maxs
+extremos = pd.DataFrame(maxs, index=idx_max, columns=["valor"])
+extremos2 = pd.DataFrame(mins[1:], index=idx_min[1:], columns=["valor"])
+ciclos = pd.concat([extremos, extremos2], axis=0)
+ciclos.sort_index(inplace=True)
+ciclos["variacion"] = ciclos["valor"].pct_change()
+
+ciclos["fecha"] = ciclos.index
+ciclos["fecha_previa"] = ciclos["fecha"].shift(1)
+ciclos["duracion"] = ciclos["fecha"]-ciclos["fecha_previa"]
+ciclos = ciclos.drop(["fecha", "fecha_previa"], axis=1)
+
+baja_prom = round(ciclos[ciclos["variacion"]<0]["variacion"].mean()*100,1)
+duracion_prom_baja = ciclos[ciclos["variacion"]<0]["duracion"].mean().days
+suba_prom = round(ciclos[ciclos["variacion"]>0]["variacion"].mean()*100,1)
+duracion_prom_suba = ciclos[ciclos["variacion"]>0]["duracion"].mean().days
